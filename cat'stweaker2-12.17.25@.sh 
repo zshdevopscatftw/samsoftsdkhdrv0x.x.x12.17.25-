@@ -1,0 +1,193 @@
+#!/bin/bash
+#===============================================================================
+# CAT'S TWEAKER - MACOS FIX SCRIPT
+# Fixes DASM and Flips installation issues
+# Run: bash cats_tweaker_fix.sh
+#===============================================================================
+
+G=$'\033[0;32m'
+R=$'\033[0;31m'
+Y=$'\033[0;33m'
+C=$'\033[0;36m'
+RST=$'\033[0m'
+
+INSTALL_DIR="$HOME/retro-dev"
+SDKS="$INSTALL_DIR/sdks"
+TOOLS="$INSTALL_DIR/tools"
+
+ok()   { printf "  ${G}[✓]${RST} %s\n" "$1"; }
+fail() { printf "  ${R}[✗]${RST} %s\n" "$1"; }
+info() { printf "  ${C}[*]${RST} %s\n" "$1"; }
+
+echo ""
+echo "  🐱 Cat's Tweaker - macOS Fix Script"
+echo "  ════════════════════════════════════"
+echo ""
+
+# ============================================================================
+# FIX DASM (Atari 2600/7800 Assembler)
+# ============================================================================
+
+info "Fixing DASM..."
+
+mkdir -p "$SDKS/atari"
+cd "$SDKS/atari" || exit 1
+rm -rf dasm* 2>/dev/null
+
+# Try multiple download methods
+DASM_URL="https://github.com/dasm-assembler/dasm/releases/download/2.20.14.1/dasm-2.20.14.1-osx-x64.tar.gz"
+
+# Method 1: curl with full options
+if curl -fsSL --connect-timeout 60 --max-time 300 -L -o dasm.tar.gz "$DASM_URL" 2>/dev/null; then
+    if [[ -s dasm.tar.gz ]]; then
+        tar xzf dasm.tar.gz 2>/dev/null
+        rm -f dasm.tar.gz
+        
+        # Find and move the dasm binary
+        if [[ -f "dasm" ]]; then
+            chmod +x dasm
+            ok "DASM (direct)"
+        elif [[ -d "dasm-2.20.14.1" ]]; then
+            mv dasm-2.20.14.1/* . 2>/dev/null
+            rmdir dasm-2.20.14.1 2>/dev/null
+            chmod +x dasm 2>/dev/null
+            ok "DASM (from subdirectory)"
+        else
+            # List what we got
+            info "Contents: $(ls -la)"
+            fail "DASM (extraction issue)"
+        fi
+    else
+        fail "DASM (empty download)"
+    fi
+else
+    # Method 2: Try wget
+    info "Trying wget..."
+    if wget -q --timeout=60 -O dasm.tar.gz "$DASM_URL" 2>/dev/null; then
+        tar xzf dasm.tar.gz 2>/dev/null
+        rm -f dasm.tar.gz
+        chmod +x dasm 2>/dev/null
+        ok "DASM (via wget)"
+    else
+        # Method 3: Build from source
+        info "Building DASM from source..."
+        rm -rf dasm-src dasm-master 2>/dev/null
+        
+        if curl -fsSL -o dasm-src.tar.gz "https://github.com/dasm-assembler/dasm/archive/refs/tags/2.20.14.1.tar.gz" 2>/dev/null; then
+            tar xzf dasm-src.tar.gz
+            cd dasm-2.20.14.1/src || cd dasm-*/src || exit 1
+            
+            if make 2>/dev/null; then
+                cp dasm "$SDKS/atari/"
+                cd "$SDKS/atari"
+                rm -rf dasm-2.20.14.1 dasm-src.tar.gz
+                chmod +x dasm
+                ok "DASM (built from source)"
+            else
+                fail "DASM (build failed)"
+            fi
+        else
+            fail "DASM (all methods failed)"
+        fi
+    fi
+fi
+
+# ============================================================================
+# FIX FLIPS (ROM Patching Tool)
+# ============================================================================
+
+info "Fixing Flips..."
+
+cd "$HOME" || exit 1
+rm -rf "$TOOLS/flips" 2>/dev/null
+mkdir -p "$TOOLS/flips"
+cd "$TOOLS/flips" || exit 1
+
+# Flips has NO prebuilt macOS binary - must build from source
+info "Building Flips from source (no macOS prebuilt available)..."
+
+rm -rf flips-src Flips-master 2>/dev/null
+
+if curl -fsSL -o flips-src.tar.gz "https://github.com/Alcaro/Flips/archive/refs/heads/master.tar.gz" 2>/dev/null; then
+    tar xzf flips-src.tar.gz 2>/dev/null
+    cd Flips-master || exit 1
+    
+    # Build CLI version (doesn't need GTK)
+    info "Compiling Flips CLI..."
+    
+    # Try the Makefile first
+    if make CFLAGS="-O3 -DFLIPS_CLI" 2>/dev/null; then
+        cp flips "$TOOLS/flips/"
+        ok "Flips (built with Makefile)"
+    else
+        # Manual compilation for CLI
+        info "Trying manual compilation..."
+        
+        g++ -O3 -DFLIPS_CLI \
+            -o flips \
+            flips.cpp \
+            libbps.cpp \
+            libips.cpp \
+            libups.cpp \
+            crc32.cpp \
+            2>/dev/null
+        
+        if [[ -f "flips" ]]; then
+            cp flips "$TOOLS/flips/"
+            ok "Flips (manual build)"
+        else
+            # Simplest possible build
+            info "Trying minimal build..."
+            clang++ -O2 -std=c++11 -DFLIPS_CLI \
+                -o flips \
+                flips.cpp libbps.cpp libips.cpp libups.cpp crc32.cpp \
+                2>/dev/null && cp flips "$TOOLS/flips/" && ok "Flips (minimal)" || fail "Flips (build failed)"
+        fi
+    fi
+    
+    cd "$TOOLS/flips"
+    rm -rf Flips-master flips-src.tar.gz
+    
+    if [[ -x "flips" ]]; then
+        # Remove quarantine
+        xattr -dr com.apple.quarantine flips 2>/dev/null
+        
+        # Test it
+        if ./flips --help >/dev/null 2>&1; then
+            ok "Flips verified working!"
+        else
+            info "Flips built but may have runtime issues"
+        fi
+    fi
+else
+    fail "Flips (download failed)"
+fi
+
+# ============================================================================
+# VERIFY PATH
+# ============================================================================
+
+echo ""
+info "Verifying PATH setup..."
+
+if grep -q "RETRO_DEV" "$HOME/.zshrc" 2>/dev/null; then
+    ok "PATH configured in .zshrc"
+else
+    echo 'export PATH="$HOME/retro-dev/sdks/atari:$HOME/retro-dev/tools/flips:$PATH"' >> "$HOME/.zshrc"
+    ok "Added to .zshrc"
+fi
+
+# ============================================================================
+# SUMMARY
+# ============================================================================
+
+echo ""
+echo "  ════════════════════════════════════"
+echo "  ${G}Fix complete!${RST}"
+echo ""
+echo "  Reload shell: source ~/.zshrc"
+echo ""
+echo "  Test commands:"
+echo "    dasm          # Should show DASM help"
+echo "    flips --help  # Should show Flips help"
+echo ""
